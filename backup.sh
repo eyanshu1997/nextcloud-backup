@@ -16,7 +16,7 @@ TEMP_DIR="/tmp/backup"
 # Set to "true" if remote backup location is NTFS filesystem (skips incompatible files)
 NTFS_COMPATIBILITY="true"
 # SSH host from ~/.ssh/config (leave empty to use REMOTE_HOST directly)
-SSH_HOST=""
+SSH_HOST="raspi"
 
 # NTFS Compatibility Notes:
 # When NTFS_COMPATIBILITY is set to "true", the script will:
@@ -381,11 +381,12 @@ test_config() {
         return 1
     fi
     
-    # Test MySQL
-    if mysqladmin -u root -p"$DB_PASSWORD" ping 2>/dev/null | grep -q "mysqld is alive"; then
-        success "✓ MySQL connection successful"
+    # Test MySQL connection (same way as backup uses it)
+    if mysql -p"$DB_PASSWORD" -e "USE $DB_NAME; SELECT 1;" >/dev/null 2>&1; then
+        success "✓ MySQL connection successful (database: $DB_NAME)"
     else
-        error "✗ MySQL connection failed"
+        error "✗ MySQL connection failed (database: $DB_NAME)"
+        info "Check database name, password, and user permissions"
         return 1
     fi
     
