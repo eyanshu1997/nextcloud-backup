@@ -8,7 +8,9 @@ A minimal bash-based backup solution for incremental directory and MySQL databas
 - **Incremental Backups**: Uses `rsync` for efficient incremental file backups
 - **MySQL Database Dumps**: Automated MySQL dumps with compression (optimized for Nextcloud)
 - **Remote Device Backup**: Secure SSH-based backup to remote device (like Raspberry Pi)
-- **Logging & Rotation**: Automatic logging with log rotation
+- **NTFS Compatibility**: Skip files with NTFS-incompatible names when backing up to Windows drives
+- **SSH Config Support**: Use SSH config hosts for complex connection setups
+- **Logging & Rotation**: Automatic logging with log rotation and separate skipped files log
 - **Systemd Integration**: Full systemd service and timer support
 - **Easy Management**: Simple commands for all operations
 
@@ -45,6 +47,8 @@ Key settings to configure:
 - `REMOTE_BACKUP_DIR`: Remote backup directory
 - `DB_NAME`: MySQL database name (default: nextcloud)
 - `DB_PASSWORD`: MySQL password
+- `NTFS_COMPATIBILITY`: Set to "true" to skip NTFS-incompatible files (for Windows/NTFS drives)
+- `SSH_HOST`: SSH config host name (leave empty to use REMOTE_USER@REMOTE_HOST)
 
 ### 3. SSH Setup
 
@@ -55,6 +59,24 @@ ssh-keygen -t rsa -b 4096
 
 # Copy key to remote device (e.g., Raspberry Pi)
 ssh-copy-id backup@raspi
+```
+
+**Alternative: Using SSH Config**
+
+For complex SSH setups, you can use SSH config instead:
+
+```bash
+# Edit SSH config
+nano ~/.ssh/config
+
+# Add configuration like:
+Host mybackup
+    HostName raspi.local
+    User backup
+    Port 2222
+    IdentityFile ~/.ssh/backup_key
+    
+# Then set SSH_HOST="mybackup" in the backup script
 ```
 
 ### 4. Test Configuration
@@ -95,22 +117,42 @@ sudo ./backup.sh test        # Test configuration
 ./backup.sh status           # Show service status
 ./backup.sh logs             # Show recent logs
 ./backup.sh logs 100         # Show last 100 log lines
+./backup.sh skipped          # Show NTFS-incompatible files that were skipped
+./backup.sh skipped 100      # Show last 100 skipped files
 ./backup.sh help             # Show help
 ```
 
 ## Configuration Details
 
-All configuration is done by editing the script itself (lines 6-12 in `/usr/local/bin/backup.sh` after installation):
+All configuration is done by editing the script itself (lines 6-16 in `/usr/local/bin/backup.sh` after installation):
 
 ```bash
 # Configuration (edit these values)
-BACKUP_DIRS="/home/user/documents,/home/user/pictures"
+BACKUP_DIRS="/var/www/nextcloud/data/"
 REMOTE_HOST="raspi"
 REMOTE_USER="backup"
-REMOTE_BACKUP_DIR="/backup"
+REMOTE_BACKUP_DIR="/mnt/harddisk/home-server-backup/"
 DB_NAME="nextcloud"
-DB_PASSWORD="eshu@123"
+DB_PASSWORD=""
+LOG_DIR="/var/log/backup"
+TEMP_DIR="/tmp/backup"
+# Set to "true" if remote backup location is NTFS filesystem (skips incompatible files)
+NTFS_COMPATIBILITY="true"
+# SSH host from ~/.ssh/config (leave empty to use REMOTE_HOST directly)
+SSH_HOST=""
 ```
+
+### NTFS Compatibility Mode
+
+When `NTFS_COMPATIBILITY="true"`, the script will:
+- Use NTFS-safe timestamps (no colons in filenames)
+- Add `--modify-window=1` to rsync (NTFS has 2-second timestamp resolution)
+- Skip files/folders with NTFS-incompatible characters: `< > : " | ? * \`
+- Skip files ending with spaces or periods
+- Skip Windows reserved names (CON, PRN, AUX, NUL, COM1-9, LPT1-9)
+- Log all skipped files to `/var/log/backup/backup_skipped.log`
+
+**Note**: This is useful when backing up to external NTFS drives connected to your backup device.
 
 ### Systemd Timer Schedule
 
@@ -145,6 +187,7 @@ Example schedules:
 
 ### Log Locations
 - **Application Logs**: `/var/log/backup/backup.log`
+- **Skipped Files Log**: `/var/log/backup/backup_skipped.log` (NTFS incompatible files)
 - **Systemd Logs**: `journalctl -u backup.service`
 
 ### Log Rotation
@@ -162,6 +205,9 @@ sudo tail -f /var/log/backup/backup.log
 
 # View recent logs
 ./backup.sh logs
+
+# View recently skipped files (NTFS incompatible)
+./backup.sh skipped
 ```
 
 ## Troubleshooting
@@ -192,7 +238,19 @@ sudo tail -f /var/log/backup/backup.log
    sudo chmod +x /usr/local/bin/backup.sh
    ```
 
-4. **Disk Space Issues**
+4. **NTFS Compatibility Issues**
+   ```bash
+   # Check skipped files
+   ./backup.sh skipped
+   
+   # View full skipped files log
+   cat /var/log/backup/backup_skipped.log
+   
+   # Rename problematic files to make them NTFS-compatible
+   # Remove characters: < > : " | ? * \ and trailing spaces/periods
+   ```
+
+5. **Disk Space Issues**
    ```bash
    # Check disk space on source
    df -h
@@ -201,12 +259,65 @@ sudo tail -f /var/log/backup/backup.log
    ssh backup@raspi "df -h"
    ```
 
+6. **SSH Config Issues**
+   ```bash
+   # Test SSH config host
+   ssh your_ssh_host_name
+   
+   # Debug SSH connection
+   ssh -v your_ssh_host_name
+   ```
+
 ### Debug Mode
 
 Enable detailed logging by modifying the backup script:
 ```bash
 # Add debug mode to backup.sh
 set -x  # Enable debug output
+```
+
+## NTFS Backup Considerations
+
+When backing up to NTFS drives (common with external USB drives on Raspberry Pi), certain files may be incompatible with the NTFS filesystem.
+
+### NTFS Limitations
+- **Forbidden characters**: `< > : " | ? * \`
+- **Reserved names**: CON, PRN, AUX, NUL, COM1-9, LPT1-9
+- **Trailing characters**: Files cannot end with spaces or periods
+- **Timestamp precision**: NTFS has 2-second timestamp resolution
+
+### Handling NTFS Incompatible Files
+
+**Option 1: Skip Incompatible Files (Recommended)**
+```bash
+# Enable NTFS compatibility mode in backup script
+NTFS_COMPATIBILITY="true"
+
+# This will:
+# - Skip incompatible files automatically
+# - Log skipped files to backup_skipped.log
+# - Continue backup process without errors
+```
+
+**Option 2: Fix Incompatible Files**
+```bash
+# Find files with problematic characters
+find /var/www/nextcloud/data -name '*[<>:"|?*\\]*' -type f
+
+# Rename files to remove problematic characters
+# Example: rename 'file:name.txt' to 'file_name.txt'
+```
+
+**Monitoring Skipped Files**
+```bash
+# View recently skipped files
+./backup.sh skipped
+
+# Check total count of skipped files
+wc -l /var/log/backup/backup_skipped.log
+
+# Find most common problematic patterns
+grep -o 'SKIPPED.*' /var/log/backup/backup_skipped.log | sort | uniq -c | sort -nr
 ```
 
 ## Requirements
@@ -242,4 +353,3 @@ For issues and questions:
 2. Review logs: `./backup.sh logs`
 3. Test configuration: `./backup.sh test`
 4. Create an issue with detailed logs and configuration
-

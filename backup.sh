@@ -13,6 +13,20 @@ DB_NAME="nextcloud"
 DB_PASSWORD=""
 LOG_DIR="/var/log/backup"
 TEMP_DIR="/tmp/backup"
+# Set to "true" if remote backup location is NTFS filesystem (skips incompatible files)
+NTFS_COMPATIBILITY="true"
+# SSH host from ~/.ssh/config (leave empty to use REMOTE_HOST directly)
+SSH_HOST=""
+
+# NTFS Compatibility Notes:
+# When NTFS_COMPATIBILITY is set to "true", the script will:
+# 1. Use NTFS-safe timestamps (no colons)
+# 2. Add --modify-window=1 to rsync (NTFS has 2-second timestamp resolution)
+# 3. Skip files/folders with NTFS-incompatible characters and log them
+# 4. Create a separate log file for skipped items: backup_skipped.log
+# 
+# NTFS incompatible characters: : * ? " < > | \
+# Also skips files ending with spaces or periods, and Windows reserved names
 
 # Script locations
 SCRIPT_PATH="/usr/local/bin/backup.sh"
@@ -26,6 +40,54 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
+
+# Function to check if filename is NTFS compatible
+is_ntfs_compatible() {
+    local file_path="$1"
+    local filename=$(basename "$file_path")
+    
+    # Check for forbidden characters: < > : " | ? * \
+    if [[ "$file_path" =~ [\<\>\:\"\|\?\*\\] ]]; then
+        return 1
+    fi
+    
+    # Check if filename ends with space or period
+    if [[ "$filename" =~ [\ \.]+$ ]]; then
+        return 1
+    fi
+    
+    # Check for Windows reserved names (case insensitive)
+    if echo "$filename" | grep -iE '^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\.|$)' >/dev/null; then
+        return 1
+    fi
+    
+    return 0
+}
+
+# Function to get SSH connection string
+get_ssh_target() {
+    if [[ -n "$SSH_HOST" ]]; then
+        echo "$SSH_HOST"
+    else
+        echo "$REMOTE_USER@$REMOTE_HOST"
+    fi
+}
+
+# Function to log skipped files
+log_skipped() {
+    local file_path="$1"
+    local reason="$2"
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - SKIPPED: $file_path - $reason" >> "$LOG_DIR/backup_skipped.log"
+}
+
+# Function to check if rsync supports character translation
+check_rsync_iconv() {
+    if rsync --help 2>/dev/null | grep -q "iconv"; then
+        return 0
+    else
+        return 1
+    fi
+}
 
 # Logging function
 log() {
@@ -54,7 +116,15 @@ run_backup() {
 
     # 1. Create MySQL dump
     log "Creating MySQL dump for database: $DB_NAME"
-    DUMP_FILE="$TEMP_DIR/mysql_dump_$(date +%Y%m%d_%H%M%S).sql"
+    
+    # Create NTFS-safe timestamp if needed
+    if [[ "$NTFS_COMPATIBILITY" == "true" ]]; then
+        TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+    else
+        TIMESTAMP=$(date +%Y-%m-%d_%H:%M:%S)
+    fi
+    
+    DUMP_FILE="$TEMP_DIR/mysql_dump_${TIMESTAMP}.sql"
     if ! mysqldump --single-transaction "$DB_NAME" -p"$DB_PASSWORD" > "$DUMP_FILE" 2>>"$LOG_DIR/backup.log"; then
         log "ERROR: Failed to create MySQL dump"
         exit 1
@@ -70,19 +140,29 @@ run_backup() {
 
     # 3. Sync MySQL dump to remote server
     log "Syncing MySQL dump to remote server..."
+    SSH_TARGET=$(get_ssh_target)
     REMOTE_DB_DIR="$REMOTE_BACKUP_DIR/mysql"
-    if ! ssh "$REMOTE_USER@$REMOTE_HOST" "mkdir -p $REMOTE_DB_DIR" 2>>"$LOG_DIR/backup.log"; then
+    if ! ssh "$SSH_TARGET" "mkdir -p $REMOTE_DB_DIR" 2>>"$LOG_DIR/backup.log"; then
         log "ERROR: Failed to create remote MySQL directory"
         exit 1
     fi
 
-    if ! rsync -avz --progress "$DUMP_FILE" "$REMOTE_USER@$REMOTE_HOST:$REMOTE_DB_DIR/" 2>>"$LOG_DIR/backup.log"; then
-        log "ERROR: Failed to sync MySQL dump to remote server"
-        exit 1
+    # Use appropriate rsync options based on NTFS compatibility
+    if [[ "$NTFS_COMPATIBILITY" == "true" ]]; then
+        if ! rsync -avz --progress --modify-window=1 "$DUMP_FILE" "$SSH_TARGET:$REMOTE_DB_DIR/" 2>>"$LOG_DIR/backup.log"; then
+            log "ERROR: Failed to sync MySQL dump to remote server"
+            exit 1
+        fi
+    else
+        if ! rsync -avz --progress "$DUMP_FILE" "$SSH_TARGET:$REMOTE_DB_DIR/" 2>>"$LOG_DIR/backup.log"; then
+            log "ERROR: Failed to sync MySQL dump to remote server"
+            exit 1
+        fi
     fi
 
     # 4. Perform incremental directory backup
     log "Starting incremental directory backup..."
+    SSH_TARGET=$(get_ssh_target)
     IFS=',' read -ra DIRS <<< "$BACKUP_DIRS"
     for dir in "${DIRS[@]}"; do
         dir=$(echo "$dir" | xargs)
@@ -91,14 +171,62 @@ run_backup() {
             DIR_NAME=$(basename "$dir")
             REMOTE_DIR_PATH="$REMOTE_BACKUP_DIR/directories/$DIR_NAME"
             
-            ssh "$REMOTE_USER@$REMOTE_HOST" "mkdir -p $REMOTE_DIR_PATH" 2>>"$LOG_DIR/backup.log"
+            ssh "$SSH_TARGET" "mkdir -p $REMOTE_DIR_PATH" 2>>"$LOG_DIR/backup.log"
             
-            if ! rsync -avz --delete --progress \
-                --exclude=".git" --exclude=".DS_Store" --exclude="*.tmp" \
-                "$dir/" "$REMOTE_USER@$REMOTE_HOST:$REMOTE_DIR_PATH/" 2>>"$LOG_DIR/backup.log"; then
-                log "ERROR: Failed to backup directory: $dir"
-                exit 1
+            # Check if NTFS compatibility is required
+            if [[ "$NTFS_COMPATIBILITY" == "true" ]]; then
+                log "Using NTFS compatibility mode - checking for incompatible files..."
+                
+                # Create exclude file for NTFS incompatible items
+                EXCLUDE_FILE="$TEMP_DIR/ntfs_excludes.txt"
+                > "$EXCLUDE_FILE"  # Clear the file
+                
+                # Find and exclude NTFS incompatible files/directories
+                while IFS= read -r -d '' item; do
+                    if ! is_ntfs_compatible "$item"; then
+                        # Get relative path for exclusion
+                        rel_path="${item#$dir/}"
+                        echo "$rel_path" >> "$EXCLUDE_FILE"
+                        log_skipped "$item" "NTFS incompatible filename"
+                        log "SKIPPED: $item (NTFS incompatible)"
+                    fi
+                done < <(find "$dir" -print0)
+                
+                # Perform rsync with exclusions
+                if [[ -s "$EXCLUDE_FILE" ]]; then
+                    log "Excluding $(wc -l < "$EXCLUDE_FILE") incompatible items"
+                    if ! rsync -avz --delete --progress \
+                        --exclude-from="$EXCLUDE_FILE" \
+                        --exclude=".git" --exclude=".DS_Store" --exclude="*.tmp" \
+                        --modify-window=1 \
+                        "$dir/" "$SSH_TARGET:$REMOTE_DIR_PATH/" 2>>"$LOG_DIR/backup.log"; then
+                        log "ERROR: Failed to backup directory: $dir"
+                        exit 1
+                    fi
+                else
+                    log "No incompatible files found"
+                    if ! rsync -avz --delete --progress \
+                        --exclude=".git" --exclude=".DS_Store" --exclude="*.tmp" \
+                        --modify-window=1 \
+                        "$dir/" "$SSH_TARGET:$REMOTE_DIR_PATH/" 2>>"$LOG_DIR/backup.log"; then
+                        log "ERROR: Failed to backup directory: $dir"
+                        exit 1
+                    fi
+                fi
+                
+                # Clean up exclude file
+                rm -f "$EXCLUDE_FILE"
+            else
+                log "Using standard rsync (no NTFS compatibility mode)"
+                # Standard rsync without NTFS compatibility
+                if ! rsync -avz --delete --progress \
+                    --exclude=".git" --exclude=".DS_Store" --exclude="*.tmp" \
+                    "$dir/" "$SSH_TARGET:$REMOTE_DIR_PATH/" 2>>"$LOG_DIR/backup.log"; then
+                    log "ERROR: Failed to backup directory: $dir"
+                    exit 1
+                fi
             fi
+            
             log "Successfully backed up directory: $dir"
         else
             log "WARNING: Directory not found: $dir"
@@ -107,7 +235,17 @@ run_backup() {
 
     # 5. Clean up
     rm -f "$TEMP_DIR"/*.sql.gz 2>/dev/null
-    ssh "$REMOTE_USER@$REMOTE_HOST" "find $REMOTE_DB_DIR -name '*.sql.gz' -mtime +7 -delete" 2>/dev/null
+    SSH_TARGET=$(get_ssh_target)
+    ssh "$SSH_TARGET" "find $REMOTE_DB_DIR -name '*.sql.gz' -mtime +7 -delete" 2>/dev/null
+
+    # Show skipped files summary if any
+    if [[ -f "$LOG_DIR/backup_skipped.log" ]]; then
+        SKIPPED_COUNT=$(wc -l < "$LOG_DIR/backup_skipped.log" 2>/dev/null || echo "0")
+        if [[ "$SKIPPED_COUNT" -gt 0 ]]; then
+            log "WARNING: $SKIPPED_COUNT files were skipped due to NTFS incompatibility"
+            log "Check $LOG_DIR/backup_skipped.log for details"
+        fi
+    fi
 
     log "Backup process completed successfully"
 }
@@ -211,12 +349,35 @@ uninstall() {
 test_config() {
     info "Testing configuration..."
     
-    # Test SSH
-    if ssh -o ConnectTimeout=10 -o BatchMode=yes "$REMOTE_USER@$REMOTE_HOST" "echo 'SSH OK'" 2>/dev/null; then
-        success "✓ SSH connection successful"
+    # Test NTFS compatibility settings
+    if [[ "$NTFS_COMPATIBILITY" == "true" ]]; then
+        info "NTFS compatibility mode: ENABLED (skipping incompatible files)"
+        
+        # Test NTFS-safe timestamp
+        NTFS_TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+        info "NTFS-safe timestamp format: $NTFS_TIMESTAMP"
     else
-        error "✗ SSH connection failed"
-        info "Run: ssh-copy-id $REMOTE_USER@$REMOTE_HOST"
+        info "NTFS compatibility mode: DISABLED"
+    fi
+    
+    # Test SSH configuration
+    SSH_TARGET=$(get_ssh_target)
+    if [[ -n "$SSH_HOST" ]]; then
+        info "Using SSH host from config: $SSH_HOST"
+    else
+        info "Using direct connection: $REMOTE_USER@$REMOTE_HOST"
+    fi
+    
+    # Test SSH connection
+    if ssh -o ConnectTimeout=10 -o BatchMode=yes "$SSH_TARGET" "echo 'SSH OK'" 2>/dev/null; then
+        success "✓ SSH connection successful to $SSH_TARGET"
+    else
+        error "✗ SSH connection failed to $SSH_TARGET"
+        if [[ -z "$SSH_HOST" ]]; then
+            info "Run: ssh-copy-id $REMOTE_USER@$REMOTE_HOST"
+        else
+            info "Check your SSH config for host: $SSH_HOST"
+        fi
         return 1
     fi
     
@@ -290,10 +451,22 @@ run_manual() {
     info "Backup started. Check logs with: $0 logs"
 }
 
+show_skipped() {
+    local lines="${1:-50}"
+    if [[ -f "$LOG_DIR/backup_skipped.log" ]]; then
+        echo "=== Recently Skipped Files (NTFS Incompatible) ==="
+        tail -n "$lines" "$LOG_DIR/backup_skipped.log"
+        echo ""
+        echo "Total skipped files: $(wc -l < "$LOG_DIR/backup_skipped.log")"
+    else
+        info "No skipped files log found"
+    fi
+}
+
 show_help() {
     echo "Nextcloud Remote Device SSH Backup System"
     echo ""
-    echo "Usage: $0 {install|uninstall|backup|test|enable|disable|status|logs|run|help}"
+    echo "Usage: $0 {install|uninstall|backup|test|enable|disable|status|logs|skipped|run|help}"
     echo ""
     echo "Commands:"
     echo "  install   - Install backup system"
@@ -304,8 +477,17 @@ show_help() {
     echo "  disable   - Disable automatic backups"
     echo "  status    - Show service status"
     echo "  logs      - Show logs"
+    echo "  skipped   - Show skipped files (NTFS incompatible)"
     echo "  run       - Run backup manually via systemd"
     echo "  help      - Show this help"
+    echo ""
+    echo "Configuration:"
+    echo "  NTFS_COMPATIBILITY  - Set to 'true' to skip NTFS-incompatible files"
+    echo "  SSH_HOST           - Use SSH config host instead of REMOTE_USER@REMOTE_HOST"
+    echo ""
+    echo "NTFS Mode:"
+    echo "  When enabled, skips files with characters: : * ? \" < > | \\"
+    echo "  Skipped files are logged to: /var/log/backup/backup_skipped.log"
 }
 
 # Main script logic
@@ -334,6 +516,9 @@ case "${1:-help}" in
     "logs")
         show_logs "$2"
         ;;
+    "skipped")
+        show_skipped "$2"
+        ;;
     "run")
         run_manual
         ;;
@@ -341,4 +526,3 @@ case "${1:-help}" in
         show_help
         ;;
 esac
-
