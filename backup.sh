@@ -275,6 +275,7 @@ Wants=network.target
 Type=oneshot
 User=root
 Group=root
+ExecStartPre=/bin/mkdir -p /var/log/backup /tmp/backup
 ExecStart=/usr/local/bin/backup.sh backup
 StandardOutput=journal
 StandardError=journal
