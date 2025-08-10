@@ -10,6 +10,7 @@ REMOTE_HOST="raspi"
 REMOTE_USER="backup"
 REMOTE_BACKUP_DIR="/mnt/harddisk/home-server-backup/"
 DB_NAME="nextcloud"
+DB_USER="nextcloud"
 DB_PASSWORD=""
 LOG_DIR="/var/log/backup"
 TEMP_DIR="/tmp/backup"
@@ -125,7 +126,7 @@ run_backup() {
     fi
     
     DUMP_FILE="$TEMP_DIR/mysql_dump_${TIMESTAMP}.sql"
-    if ! mysqldump --single-transaction "$DB_NAME" -p"$DB_PASSWORD" > "$DUMP_FILE" 2>>"$LOG_DIR/backup.log"; then
+    if ! mysqldump --single-transaction -u"$DB_USER" -p"$DB_PASSWORD" "$DB_NAME" > "$DUMP_FILE" 2>>"$LOG_DIR/backup.log"; then
         log "ERROR: Failed to create MySQL dump"
         exit 1
     fi
@@ -382,11 +383,11 @@ test_config() {
     fi
     
     # Test MySQL connection (same way as backup uses it)
-    if mysql -p"$DB_PASSWORD" -e "USE $DB_NAME; SELECT 1;" >/dev/null 2>&1; then
-        success "✓ MySQL connection successful (database: $DB_NAME)"
+    if mysql -u"$DB_USER" -p"$DB_PASSWORD" -e "USE $DB_NAME; SELECT 1;" >/dev/null 2>&1; then
+        success "✓ MySQL connection successful (database: $DB_NAME, user: $DB_USER)"
     else
-        error "✗ MySQL connection failed (database: $DB_NAME)"
-        info "Check database name, password, and user permissions"
+        error "✗ MySQL connection failed (database: $DB_NAME, user: $DB_USER)"
+        info "Check database name, username, password, and user permissions"
         return 1
     fi
     
