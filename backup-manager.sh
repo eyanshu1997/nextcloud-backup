@@ -86,6 +86,7 @@ install() {
     if [[ -f "$CONFIG_FILE" ]]; then
         cp "$CONFIG_FILE" "$CONFIG_PATH"
         chmod 600 "$CONFIG_PATH"  # Restrict access due to password
+        chown "${BACKUP_USER:-eyanshu}:${BACKUP_USER:-eyanshu}" "$CONFIG_PATH"  # Set proper ownership
         info "Configuration file copied to $CONFIG_PATH"
     else
         error "Configuration file not found: $CONFIG_FILE"
@@ -193,17 +194,6 @@ test_config() {
     if [[ -z "$REMOTE_HOST" ]]; then
         error "Configuration not loaded. Please ensure backup.conf exists and is valid."
         exit 1
-    fi
-    
-    # Test NTFS compatibility settings
-    if [[ "$NTFS_COMPATIBILITY" == "true" ]]; then
-        info "NTFS compatibility mode: ENABLED (skipping incompatible files)"
-        
-        # Test NTFS-safe timestamp
-        NTFS_TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-        info "NTFS-safe timestamp format: $NTFS_TIMESTAMP"
-    else
-        info "NTFS compatibility mode: DISABLED"
     fi
     
     # Test SSH configuration
@@ -346,22 +336,12 @@ run_via_systemd() {
     info "Backup started via systemd. Check logs with: $0 logs"
 }
 
-show_skipped() {
-    local lines="${1:-50}"
-    if [[ -f "${LOG_DIR:-/var/log/backup}/backup_skipped.log" ]]; then
-        echo "=== Recently Skipped Files (NTFS Incompatible) ==="
-        tail -n "$lines" "${LOG_DIR:-/var/log/backup}/backup_skipped.log"
-        echo ""
-        echo "Total skipped files: $(wc -l < "${LOG_DIR:-/var/log/backup}/backup_skipped.log")"
-    else
-        info "No skipped files log found"
-    fi
-}
+
 
 show_help() {
     echo "Nextcloud Backup Manager"
     echo ""
-    echo "Usage: $0 {install|uninstall|backup|test|enable|disable|status|logs|skipped|run|help}"
+    echo "Usage: $0 {install|uninstall|backup|test|enable|disable|status|logs|run|help}"
     echo ""
     echo "Installation & Management:"
     echo "  install   - Install backup system (requires root)"
@@ -377,12 +357,10 @@ show_help() {
     echo "Manual Operations:"
     echo "  backup    - Run backup manually (bypasses systemd)"
     echo "  logs      - Show backup logs"
-    echo "  skipped   - Show skipped files (NTFS incompatible)"
     echo "  help      - Show this help"
     echo ""
     echo "Configuration:"
     echo "  Edit backup.conf to configure directories, remote server, and database settings"
-    echo "  NTFS_COMPATIBILITY  - Set to 'true' to skip NTFS-incompatible files"
     echo "  SSH_HOST           - Use SSH config host instead of REMOTE_USER@REMOTE_HOST"
     echo ""
     echo "Files:"
@@ -416,9 +394,6 @@ case "${1:-help}" in
         ;;
     "logs")
         show_logs "$2"
-        ;;
-    "skipped")
-        show_skipped "$2"
         ;;
     "run")
         run_via_systemd

@@ -8,10 +8,9 @@ A minimal bash-based backup solution for incremental directory and MySQL databas
 - **Incremental Backups**: Uses `rsync` for efficient incremental file backups
 - **MySQL Database Dumps**: Automated MySQL dumps with compression (optimized for Nextcloud)
 - **Remote Device Backup**: Secure SSH-based backup to remote device (like Raspberry Pi)
-- **NTFS Compatibility**: Skip files with NTFS-incompatible names when backing up to Windows drives
 - **SSH Config Support**: Use SSH config hosts for complex connection setups
 - **Configuration File**: External configuration file for easy management
-- **Logging & Rotation**: Automatic logging with log rotation and separate skipped files log
+- **Logging & Rotation**: Automatic logging with log rotation
 - **Systemd Integration**: Full systemd service and timer support
 - **Easy Management**: Simple commands for all operations
 
@@ -32,7 +31,7 @@ This backup system uses a **modular design** with two main components:
 ### 1. Core Backup Engine (`nextcloud-backup-core.sh`)
 - **Purpose**: Handles only backup operations
 - **Execution**: Runs via systemd service for automated backups
-- **Features**: Database dumps, file syncing, NTFS compatibility, logging
+- **Features**: Database dumps, file syncing, logging
 - **Security**: Minimal attack surface, focused functionality
 
 ### 2. Management Wrapper (`backup-manager.sh`)
@@ -64,7 +63,6 @@ Key settings to configure:
 - `DB_USER`: MySQL username
 - `DB_PASSWORD`: MySQL password
 - `BACKUP_USER`: System user to run the backup service (should have SSH keys and MySQL access)
-- `NTFS_COMPATIBILITY`: Set to "true" to skip NTFS-incompatible files (for Windows/NTFS drives)
 
 ### 2. Installation
 
@@ -145,8 +143,6 @@ sudo ./backup-manager.sh run         # Run backup via systemd service
 ./backup-manager.sh status           # Show service status and schedule
 ./backup-manager.sh logs             # Show recent logs
 ./backup-manager.sh logs 100         # Show last 100 log lines
-./backup-manager.sh skipped          # Show NTFS-incompatible files that were skipped
-./backup-manager.sh skipped 100      # Show last 100 skipped files
 ./backup-manager.sh help             # Show help
 ```
 
@@ -185,9 +181,6 @@ TEMP_DIR="/tmp/backup"
 # System user to run the backup service (should have SSH keys and MySQL access)
 BACKUP_USER="eyanshu"
 
-# NTFS compatibility mode (set to "true" for NTFS filesystems)
-NTFS_COMPATIBILITY="true"
-
 # SSH host from ~/.ssh/config (leave empty to use REMOTE_HOST directly)
 SSH_HOST=""
 
@@ -195,17 +188,6 @@ SSH_HOST=""
 MYSQL_RETENTION_DAYS="7"
 ```
 
-### NTFS Compatibility Mode
-
-When `NTFS_COMPATIBILITY="true"`, the script will:
-- Use NTFS-safe timestamps (no colons in filenames)
-- Add `--modify-window=1` to rsync (NTFS has 2-second timestamp resolution)
-- Skip files/folders with NTFS-incompatible characters: `< > : " | ? * \`
-- Skip files ending with spaces or periods
-- Skip Windows reserved names (CON, PRN, AUX, NUL, COM1-9, LPT1-9)
-- Log all skipped files to `/var/log/backup/backup_skipped.log`
-
-**Note**: This is useful when backing up to external NTFS drives connected to your backup device.
 
 ### Backup User Configuration
 
@@ -251,7 +233,6 @@ Example schedules:
 
 ### Log Locations
 - **Application Logs**: `/var/log/backup/backup.log`
-- **Skipped Files Log**: `/var/log/backup/backup_skipped.log` (NTFS incompatible files)
 - **Systemd Logs**: `journalctl -u backup.service`
 
 ### Log Rotation
@@ -269,9 +250,6 @@ sudo tail -f /var/log/backup/backup.log
 
 # View recent logs
 ./backup-manager.sh logs
-
-# View recently skipped files (NTFS incompatible)
-./backup-manager.sh skipped
 ```
 
 ## Troubleshooting
@@ -304,19 +282,7 @@ sudo tail -f /var/log/backup/backup.log
    sudo chmod +x /usr/local/bin/backup-manager.sh
    ```
 
-4. **NTFS Compatibility Issues**
-   ```bash
-   # Check skipped files
-   ./backup-manager.sh skipped
-   
-   # View full skipped files log
-   cat /var/log/backup/backup_skipped.log
-   
-   # Rename problematic files to make them NTFS-compatible
-   # Remove characters: < > : " | ? * \ and trailing spaces/periods
-   ```
-
-5. **Disk Space Issues**
+4. **Disk Space Issues**
    ```bash
    # Check disk space on source
    df -h
@@ -325,7 +291,7 @@ sudo tail -f /var/log/backup/backup.log
    ssh backup@raspi "df -h"
    ```
 
-6. **SSH Config Issues**
+5. **SSH Config Issues**
    ```bash
    # Test SSH config host
    ssh your_ssh_host_name
@@ -334,7 +300,7 @@ sudo tail -f /var/log/backup/backup.log
    ssh -v your_ssh_host_name
    ```
 
-7. **Systemd Service User Issues**
+6. **Systemd Service User Issues**
    ```bash
    # If you get namespace errors (exit code 226), check the backup user configuration
    # Verify the BACKUP_USER setting in backup.conf
@@ -349,7 +315,7 @@ sudo tail -f /var/log/backup/backup.log
    sudo ./backup-manager.sh install
    ```
 
-8. **User Permission Issues**
+7. **User Permission Issues**
    ```bash
    # Ensure backup user has required permissions
    # Check MySQL access
@@ -370,49 +336,7 @@ Enable detailed logging by modifying the core backup script:
 set -x  # Enable debug output
 ```
 
-## NTFS Backup Considerations
 
-When backing up to NTFS drives (common with external USB drives on Raspberry Pi), certain files may be incompatible with the NTFS filesystem.
-
-### NTFS Limitations
-- **Forbidden characters**: `< > : " | ? * \`
-- **Reserved names**: CON, PRN, AUX, NUL, COM1-9, LPT1-9
-- **Trailing characters**: Files cannot end with spaces or periods
-- **Timestamp precision**: NTFS has 2-second timestamp resolution
-
-### Handling NTFS Incompatible Files
-
-**Option 1: Skip Incompatible Files (Recommended)**
-```bash
-# Enable NTFS compatibility mode in backup script
-NTFS_COMPATIBILITY="true"
-
-# This will:
-# - Skip incompatible files automatically
-# - Log skipped files to backup_skipped.log
-# - Continue backup process without errors
-```
-
-**Option 2: Fix Incompatible Files**
-```bash
-# Find files with problematic characters
-find /var/www/nextcloud/data -name '*[<>:"|?*\\]*' -type f
-
-# Rename files to remove problematic characters
-# Example: rename 'file:name.txt' to 'file_name.txt'
-```
-
-**Monitoring Skipped Files**
-```bash
-# View recently skipped files
-./backup-manager.sh skipped
-
-# Check total count of skipped files
-wc -l /var/log/backup/backup_skipped.log
-
-# Find most common problematic patterns
-grep -o 'SKIPPED.*' /var/log/backup/backup_skipped.log | sort | uniq -c | sort -nr
-```
 
 ## Requirements
 
