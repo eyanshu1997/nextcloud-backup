@@ -371,3 +371,8 @@ For issues and questions:
 2. Review logs: `./backup-manager.sh logs`
 3. Test configuration: `./backup-manager.sh test`
 4. Create an issue with detailed logs and configuration
+
+## Files (updated 2026-11-11)
+- `nextcloud-backup-core.sh` v2.1: throttled differential rsync (nice/ionice idle, bandwidth cap, time limit), delete guard, change history, verified DB dump, config bundle step.
+- `dr-config-bundle.sh`: disaster-recovery bundle (Nextcloud config, Apache/PHP/MariaDB/Redis settings, compose stacks and secrets under `~/configs`, docs) sent to the backup disk, sha256-verified.
+- `backup.conf.example`: copy to `backup.conf` (not tracked) and fill in the credentials locally. Never commit `backup.conf`.

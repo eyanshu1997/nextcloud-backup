@@ -1,0 +1,3 @@
+# local configuration with credentials: copy backup.conf.example to backup.conf and fill it in
+backup.conf
+*.bak*

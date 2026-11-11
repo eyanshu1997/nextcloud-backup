@@ -1,0 +1,50 @@
+# Nextcloud Backup Configuration File
+# Edit these values according to your setup
+
+# Directories to backup (comma-separated)
+BACKUP_DIRS="/var/www/nextcloud/data/"
+
+# Remote server settings
+REMOTE_HOST="raspi"
+REMOTE_USER="eyanshu"
+REMOTE_BACKUP_DIR="/mnt/harddisk/home-server-backup/"
+
+# Database settings
+DB_NAME="nextcloud"
+DB_USER="eyanshu"
+DB_PASSWORD=""   # set locally, never commit
+
+# Local settings
+LOG_DIR="/var/log/backup"
+TEMP_DIR="/tmp/backup"
+
+# System user to run the backup service (should be the user with SSH keys and MySQL access)
+BACKUP_USER="eyanshu"
+
+
+
+# SSH Configuration
+# SSH host from ~/.ssh/config (leave empty to use REMOTE_HOST directly)
+SSH_HOST="raspi"
+
+# Advanced Settings
+# Backup retention (days) - MySQL dumps older than this will be deleted
+MYSQL_RETENTION_DAYS="7"
+
+# Rsync additional options (advanced users only)
+# RSYNC_EXTRA_OPTS="--bandwidth=1000"
+
+# --- guard (2026-11-11): only the v2 script (which sets NC_BACKUP_V2) may use this config for a backup run.
+# The old v1 script has no throttling, no delete protection and floods the log; it must not run.
+if [[ "$(basename "${0:-}")" == "nextcloud-backup-core.sh" && -z "${NC_BACKUP_V2:-}" ]]; then
+    echo "ERROR: refusing to run the old (v1) backup script; install v2 (~/server-docs/scripts/install-backup-v2.sh)" >&2
+    exit 1
+fi
+RSYNC_BWLIMIT_KBPS="1500"
+BACKUP_MAX_MINUTES="420"
+KEEP_CHANGED_DAYS="30"
+MAX_DELETE="200000"
+REMOTE_MOUNTPOINT="/mnt/harddisk"
+SOURCE_MOUNTPOINT="/mnt/exdisk"
+SOURCE_MARKER=".ncdata"
+RSYNC_EXCLUDES="/nextcloud.log*,/appdata_*/preview,/*/uploads"   # only Nextcloud-internal, regenerable or transient items; user files are never excluded
