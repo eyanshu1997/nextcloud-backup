@@ -34,16 +34,19 @@ PATHS=(
   /etc/updatedb.conf /etc/fstab /etc/logrotate.d/backup /etc/logrotate.d/nextcloud-backup
   /etc/systemd/system/backup.service /etc/systemd/system/backup.timer /etc/systemd/system/backup.service.d
   /usr/local/bin/backup.conf /usr/local/bin/nextcloud-backup-core.sh /usr/local/bin/backup-manager.sh
-  $HOME/.config/systemd/user $HOME/server-docs $HOME/configs $HOME/scripts $HOME/code/nextcloudbackup $HOME/code/container-updates
+  $HOME/.config/systemd/user $HOME/server-docs $HOME/configs $HOME/scripts $HOME/code/nextcloudbackup $HOME/code/container-updates $HOME/code/server-reboot $HOME/code/docs-mirror $HOME/code/monitoring
   # compose stacks and their .env files live in $HOME/configs/stacks/<project>/ and secrets in $HOME/configs/secrets/ (both inside $HOME/configs, 2026-11-11)
   # secrets of the docs server, its Google login and the UptimeRobot key (were missing from the bundle until 2026-11-11)
   # (oauth2-proxy cfg + emails: $HOME/configs/secrets/oauth2-proxy/, covered by $HOME/configs)
   $HOME/code/coherence/.env $HOME/.uptimekey $HOME/.local/bin/oauth2-proxy
+  # small app data, the app-backups job and the ssh client/server config (2026-11-11; private keys id_* are excluded below, public keys kept)
+  $HOME/code/cost_analysis/saves $HOME/code/cost_analysis/working $HOME/code/app-backups $HOME/.ssh
 )
 $LOW rsync -aR --ignore-missing-args --no-specials --no-devices \
   --exclude='config.sample.php' --exclude='/home/*/server-docs/archive' --exclude='/home/*/server-docs/pkgs' --exclude='/home/*/server-docs/coherence-trial' \
   --exclude='/home/*/server-docs/verification' --exclude='/home/*/code/nextcloudbackup/.git' --exclude='*.key' --exclude='key.pem' \
   --exclude='/etc/apache2/certs/*.key' --exclude='.rsync-partial' \
+  --include='/home/*/.ssh/id_*.pub' --exclude='/home/*/.ssh/id_*' --exclude='/home/*/.ssh/agent*' \
   "${PATHS[@]}" "$B/" 2>"$W/rsync.err"
 
 # 2. manifest: versions and facts a rebuild needs
